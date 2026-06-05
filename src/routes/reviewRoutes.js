@@ -55,7 +55,7 @@ const {
     getMyReviews,
     updateReview,
     deleteReview,
-} = require('../controllers/reviewcontroller');
+} = require('../controllers/reviewController');
 
 // ── Public reads ──────────────────────────────────────────────────────────
 router.get('/', getReviews);
