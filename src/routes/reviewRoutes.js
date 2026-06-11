@@ -78,5 +78,5 @@ router.post(
 router.put('/:id', protect, updateReview);
 router.delete('/:id', protect, deleteReview);
 
-// THIS LINE is what was almost certainly missing/wrong — it exports the router
+
 module.exports = router;
