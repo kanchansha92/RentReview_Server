@@ -16,15 +16,27 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
                     let user = await User.findOne({ googleId: profile.id });
 
                     if (!user) {
-                        user = await User.findOne({ email: profile.emails[0].value });
+                        const email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
+                        if (!email) {
+                            return done(null, false, { message: 'no-email' });
+                        }
 
-                        if (user) {
-                            user.googleId = profile.id;
-                            await user.save();
+                        const existing = await User.findOne({ email: email.toLowerCase() });
+
+                        if (existing) {
+                            // Only auto-link to an account whose email ownership has
+                            // actually been proven. Otherwise anyone can pre-register
+                            // a victim's address and inherit their Google identity.
+                            if (existing.isVerified !== true) {
+                                return done(null, false, { message: 'account-exists' });
+                            }
+                            existing.googleId = profile.id;
+                            await existing.save();
+                            user = existing;
                         } else {
                             user = await User.create({
                                 name: profile.displayName,
-                                email: profile.emails[0].value,
+                                email: email,
                                 googleId: profile.id,
                                 isVerified: true,
                             });
@@ -56,16 +68,28 @@ if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
                     let user = await User.findOne({ facebookId: profile.id });
 
                     if (!user) {
-                        const email = profile.emails ? profile.emails[0].value : `${profile.id}@facebook.com`;
-                        user = await User.findOne({ email });
+                        // Facebook may not release an email at all. Never use the
+                        // synthetic `<id>@facebook.com` address to *match* an
+                        // existing account — it is only a placeholder for a
+                        // brand-new record.
+                        const realEmail = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
 
-                        if (user) {
-                            user.facebookId = profile.id;
-                            await user.save();
+                        const existing = realEmail
+                            ? await User.findOne({ email: realEmail.toLowerCase() })
+                            : null;
+
+                        if (existing) {
+                            // Only auto-link to an already email-verified account.
+                            if (existing.isVerified !== true) {
+                                return done(null, false, { message: 'account-exists' });
+                            }
+                            existing.facebookId = profile.id;
+                            await existing.save();
+                            user = existing;
                         } else {
                             user = await User.create({
                                 name: profile.displayName,
-                                email: email,
+                                email: realEmail || `${profile.id}@facebook.com`,
                                 facebookId: profile.id,
                                 isVerified: true,
                             });

@@ -1,23 +1,76 @@
 const Property = require('../models/Property');
 const Review = require('../models/Review');
 
+// Longest search string we'll compile into a regex.
+const MAX_SEARCH_LENGTH = 64;
+
+// Neutralise every regex metacharacter. Without this, `?search=(a+)++$` compiles
+// to a catastrophically-backtracking pattern that Mongo evaluates against every
+// document across four fields.
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// ?page= / ?limit= — limit capped so one request can't pull the whole collection.
+//
+// The default is deliberately generous (not 20): the map renders every property
+// as a pin, and the browse grid filters client-side, so a small default would
+// silently hide properties and make search miss records that exist. The hard cap
+// still bounds the worst case. Paginate the UI before lowering these.
+const DEFAULT_PAGE_SIZE = 200;
+const MAX_PAGE_SIZE = 500;
+
+const readPaging = (query = {}) => {
+    const requested = Number(query.limit);
+    const limit = Math.max(
+        Math.min(Number.isFinite(requested) && requested > 0 ? requested : DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),
+        1
+    );
+    const page = Math.max(Number(query.page) || 1, 1);
+    return { page, limit, skip: (page - 1) * limit };
+};
+
 // @desc    List properties (optional ?search= and ?type=)
 // @route   GET /api/properties
 // @access  Public
 const getProperties = async (req, res) => {
     try {
         const { search, type } = req.query;
-        const filter = {};
+
+        // A Property exists because someone reviewed that address. When the last
+        // review is deleted the document survives (it holds geocoded coordinates
+        // worth keeping — see recalcProperty), but it should stop appearing: a
+        // card reading "0.0, no reviews" and a map pin over an address nobody has
+        // written about are noise, and they consume slots in the page limit.
+        //
+        // `?includeEmpty=1` opts back in, for an admin or a debugging session.
+        const filter = req.query.includeEmpty ? {} : { reviewsCount: { $gt: 0 } };
 
         if (type && type !== 'All Types') filter.type = type;
 
-        if (search && search.trim()) {
-            const rx = new RegExp(search.trim(), 'i');
+        if (typeof search === 'string' && search.trim()) {
+            // Truncate first, then escape — a long or hostile pattern can't reach Mongo.
+            const term = search.trim().slice(0, MAX_SEARCH_LENGTH);
+            const rx = new RegExp(escapeRegex(term), 'i');
             filter.$or = [{ title: rx }, { location: rx }, { city: rx }, { state: rx }];
         }
 
-        const properties = await Property.find(filter).sort({ createdAt: -1 });
-        res.json({ success: true, count: properties.length, properties });
+        const { page, limit, skip } = readPaging(req.query);
+
+        const [properties, total] = await Promise.all([
+            Property.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+            Property.countDocuments(filter),
+        ]);
+
+        // `properties` stays a top-level key — the frontend reads it directly.
+        // page/limit/total/totalPages are pure additions.
+        res.json({
+            success: true,
+            count: properties.length,
+            properties,
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit) || 0,
+        });
     } catch (error) {
         console.error('Get properties error:', error.message);
         res.status(500).json({ message: 'Server error. Please try again later.' });
@@ -32,9 +85,24 @@ const getProperty = async (req, res) => {
         const property = await Property.findById(req.params.id);
         if (!property) return res.status(404).json({ message: 'Property not found.' });
 
-        const reviews = await Review.find({ property: property._id }).sort({ createdAt: -1 });
+        const { page, limit, skip } = readPaging(req.query);
+        const reviewFilter = { property: property._id };
 
-        res.json({ success: true, property, reviews });
+        const [reviews, total] = await Promise.all([
+            Review.find(reviewFilter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+            Review.countDocuments(reviewFilter),
+        ]);
+
+        // `property` and `reviews` keep their existing shape; paging is additive.
+        res.json({
+            success: true,
+            property,
+            reviews,
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit) || 0,
+        });
     } catch (error) {
         if (error.kind === 'ObjectId') {
             return res.status(404).json({ message: 'Property not found.' });

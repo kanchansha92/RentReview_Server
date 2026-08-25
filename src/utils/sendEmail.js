@@ -15,9 +15,6 @@ const sendEmail = async ({ to, subject, html }) => {
         },
         // Force IPv4 to avoid ::1 (IPv6 loopback) resolution issues on some systems
         family: 4,
-        tls: {
-            rejectUnauthorized: false,
-        },
     });
 
     await transporter.sendMail({

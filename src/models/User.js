@@ -39,11 +39,20 @@ const userSchema = new mongoose.Schema(
             type: Boolean,
             default: false,
         },
-        otp: {
+        // Email confirmation. Same shape as the reset-password pair below: the
+        // token in the link is random, only its SHA-256 hash is stored, and it
+        // expires. `isVerified` gates whether a Google/Facebook identity may be
+        // auto-linked to this account (see config/passport.js) — it does NOT gate
+        // signing in.
+        //
+        // These replace the old `otp` / `otpExpiry` fields, which no endpoint ever
+        // wrote: `isVerified` was unreachable for password accounts, so they were
+        // permanently barred from social sign-in.
+        emailVerifyToken: {
             type: String,
             select: false,
         },
-        otpExpiry: {
+        emailVerifyExpire: {
             type: Date,
             select: false,
         },
@@ -54,6 +63,9 @@ const userSchema = new mongoose.Schema(
         resetPasswordExpire: {
             type: Date,
             select: false,
+        },
+        passwordChangedAt: {
+            type: Date,
         },
     },
     { timestamps: true }
@@ -68,6 +80,10 @@ const userSchema = new mongoose.Schema(
 userSchema.pre('save', async function () {
     if (!this.isModified('password')) return;
     this.password = await bcrypt.hash(this.password, 10);
+    // Stamp the change so any JWT issued before this moment is rejected by
+    // `protect`. Backdated 1s so a token minted in the same tick as the save
+    // (e.g. register) doesn't lose the race against its own `iat`.
+    this.passwordChangedAt = new Date(Date.now() - 1000);
 });
 
 // Compare passwords
