@@ -1,29 +1,3 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// One-time codes for the OAuth hand-off, so the session JWT never travels in a
-// URL (where it would land in browser history, Referer headers and proxy logs).
-//
-// The code used to be a random string pointing at an in-process Map. That made
-// the whole sign-in flow depend on hitting the SAME instance twice: the callback
-// issued the code on one dyno and the browser redeemed it on whichever dyno the
-// load balancer picked next. On a single instance it worked; on two it failed
-// roughly half the time, with nothing in the logs to explain it. A restart
-// between the redirect and the redemption broke it too.
-//
-// The code is now a short-lived signed token carrying the payload itself, so any
-// instance can redeem one issued by any other, and nothing is lost on restart.
-//
-// Three things keep this from being a second session token:
-//
-//   • `purpose: 'oauth-exchange'` — checked on redemption, so an exchange code
-//     cannot be presented to `protect` as a session token, and a session token
-//     cannot be redeemed here.
-//   • A 2-minute lifetime. The frontend redeems immediately on page load.
-//   • Single use, enforced by remembering redeemed JTIs. That part IS in-process
-//     (the only remaining per-instance state here), so on a multi-instance deploy
-//     a stolen code could in principle be replayed once per instance inside the
-//     2-minute window. Everything else about the flow is now instance-agnostic;
-//     move this Set to Redis if that residual window ever matters.
-// ─────────────────────────────────────────────────────────────────────────────
 
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');

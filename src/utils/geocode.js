@@ -1,23 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Best-effort geocoding via OpenStreetMap Nominatim (free, no API key).
-//
-// Usage policy notes (https://operations.osmfoundation.org/policies/nominatim/):
-//   • Max ~1 request/second — fine for occasional review submissions.
-//   • A valid User-Agent / contact is REQUIRED. Update the email below.
-//   • For high volume, self-host Nominatim or use a paid geocoder.
-//
-// Requires Node 18+ (global fetch). On older Node, install node-fetch.
-// ─────────────────────────────────────────────────────────────────────────────
 
-// Nominatim REQUIRES a User-Agent that identifies the application and gives a
-// way to contact whoever runs it. A placeholder is a policy violation, and the
-// consequence is a block on the address the requests come from — which for a
-// deployed API is the API itself.
-//
-//   REQUIRED ENV VAR: GEOCODER_CONTACT  (an email address or a project URL)
-//
-// Without it, geocoding is disabled rather than sent anonymously: a silently
-// missing pin is a much smaller problem than a blocked server.
 const CONTACT = (process.env.GEOCODER_CONTACT || '').trim();
 const USER_AGENT = CONTACT ? `RentReview/1.0 (${CONTACT})` : '';
 

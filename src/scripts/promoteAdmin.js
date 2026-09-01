@@ -1,24 +1,3 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Grant (or revoke) the `admin` role.
-//
-// `register` deliberately ignores any `role` in the request body — that is what
-// stops anyone from signing up as an admin — and there is no promotion endpoint,
-// by design: a route that hands out admin is a route that can be attacked. So the
-// only way in is here, on a machine that already holds the database credentials.
-//
-//   List the current admins:
-//     node src/scripts/promoteAdmin.js --list
-//
-//   Promote:
-//     node src/scripts/promoteAdmin.js you@example.com
-//
-//   Revoke (back to 'tenant'):
-//     node src/scripts/promoteAdmin.js you@example.com --revoke
-//
-// An admin can read the ID-verification queue at
-// GET /api/reviews/admin/pending-verifications and act on it at
-// PUT /api/reviews/admin/:id/verification.
-// ─────────────────────────────────────────────────────────────────────────────
 
 require('dotenv').config();
 

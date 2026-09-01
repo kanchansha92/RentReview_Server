@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const sendEmail = require('../utils/sendEmail');
 const { consumeCode } = require('../utils/oauthCodes');
+const { applySeededAdmin } = require('../utils/seededAdmins');
 const { frontendBaseUrl } = require('../utils/frontendUrl');
 
 // Generate JWT
@@ -157,6 +158,12 @@ const login = async (req, res) => {
         if (!user || !user.password || !(await user.matchPassword(password))) {
             return res.status(401).json({ message: 'Invalid email or password.' });
         }
+
+        // Only AFTER the password check — a configured address earns the role,
+        // it never stands in for proving who you are. Applied here as well as
+        // in `protect` so the sign-in response already carries role: 'admin',
+        // and the client's cached user isn't a step behind the server.
+        await applySeededAdmin(user);
 
         res.json({
             success: true,

@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { applySeededAdmin } = require('../utils/seededAdmins');
 
 const protect = async (req, res, next) => {
     try {
@@ -31,6 +32,14 @@ const protect = async (req, res, next) => {
                 return res.status(401).json({ message: 'Password recently changed. Please sign in again.' });
             }
         }
+
+        // Accounts listed in ADMIN_EMAILS hold the admin role by configuration.
+        // This is the choke point every authenticated request passes through,
+        // so putting it here means a newly configured admin is one request away
+        // from the role — including OAuth sessions, which never touch `login`
+        // below. Deliberately AFTER the token checks above: an expired or
+        // superseded token must still be rejected, listed address or not.
+        await applySeededAdmin(req.user);
 
         next();
     } catch (error) {

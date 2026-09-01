@@ -1,23 +1,3 @@
-// utils/verifyId.js
-// ─────────────────────────────────────────────────────────────────────────
-// Automated (best-effort) check of an uploaded ID proof using OCR (Tesseract).
-//
-// IMPORTANT: OCR is unreliable on real Indian IDs (Aadhaar's Hindi+English text,
-// glare, low contrast), so we DO NOT hard-reject by default — a genuine card the
-// OCR misreads must still get through. Instead:
-//
-//   • number AND a document keyword read
-//     off the image                           → auto-verify (verified: true)
-//   • only one of the two found, or OCR
-//     couldn't read it, or it's a PDF         → accept, mark PENDING (verified:false)
-//   • neither found                           → accept, mark PENDING (still not blocked)
-//
-//   POLICY: accept as pending, never hard-reject. `ok` is true on every path and
-//   the caller ignores it; the meaningful outputs are `autoVerified` and `reason`,
-//   which the controller stores so the pending pile can be sorted for manual
-//   review. A number-only match is deliberately NOT enough to auto-verify (a
-//   screenshot of a Notepad window containing the digits would pass).
-// ─────────────────────────────────────────────────────────────────────────
 
 const Tesseract = require('tesseract.js');
 
@@ -30,15 +10,7 @@ const STRICT = false;
 // A hung Cloudinary/CDN fetch used to hold the whole request open forever.
 const FETCH_TIMEOUT_MS = 10000;
 
-// ── Raw OCR text logging — OFF by default, and it must stay that way ─────
-// The recognised text of a government ID contains the holder's name, date of
-// birth and ID number. Printing it puts all three into the log stream in plain
-// text, where they are retained, shipped to whatever aggregator is attached, and
-// readable by anyone with log access — which is a much wider group than anyone
-// who can reach the document itself.
-//
-// Set ID_VERIFY_DEBUG_OCR=true ONLY on a local machine, against test documents
-// you own, while tuning ID_KEYWORDS. Never in a deployed environment.
+
 const DEBUG_OCR_TEXT = process.env.ID_VERIFY_DEBUG_OCR === 'true';
 
 if (DEBUG_OCR_TEXT) {
@@ -151,14 +123,7 @@ async function verifyIdProof({ imageUrl, mimetype, idType, idNumber }) {
     const keywords = ID_KEYWORDS[idType] || [];
     const keywordFound = keywords.some((k) => compactText.includes(k));
 
-    // Diagnostics. The booleans and the ID type are safe to log; the OCR text is
-    // NOT — on a legible card it is the holder's full name, date of birth and ID
-    // number, and logging it wrote all three into the platform log stream (and
-    // anywhere those logs are shipped or retained) on every single submission.
-    // That is precisely the data `select: false` and authenticated Cloudinary
-    // delivery exist to protect, handed over in plain text at the last step.
-    //
-    // What actually helps when tuning ID_KEYWORDS is knowing whether the text was
+ 
     // read at all and how much of it, which the length gives without the content.
     console.log(
         `[id-verify] type=${idType} numberFound=${numberFound} keywordFound=${keywordFound} chars=${text.length}`
