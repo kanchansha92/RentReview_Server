@@ -11,6 +11,7 @@ const {
     isValidRating,
     isNonEmptyString,
 } = require('../middleware/validateReview');
+const { detectPersonalInfo } = require('../utils/detectPersonalInfo');
 // ID proofs are uploaded to Cloudinary's `authenticated` namespace, so reading
 // one back needs a signed URL and deleting one needs an explicit reference.
 const {
@@ -18,8 +19,33 @@ const {
     signedAssetUrl,
     destroyAssets,
     collectReviewAssets,
-    parseDeliveryUrl,
 } = require('../utils/cloudinaryAssets');
+// The typed ID number is encrypted at rest (utils/fieldCrypto.js) and the proof
+// document is destroyed as soon as verification is settled (utils/idProofRetention.js).
+const { encrypt, decryptOrBlank } = require('../utils/fieldCrypto');
+const { retireIdProof, retentionDays } = require('../utils/idProofRetention');
+const { notifyTeamOfPendingVerification } = require('../utils/verificationNotice');
+const { recordAudit } = require('../models/AuditLog');
+
+// ─── Author privacy ──────────────────────────────────────────────────────────
+// Public review responses used to carry `user`, the author's ObjectId. That let
+// anyone group one tenant's reviews across every property they had lived at and
+// reviewed  on a site whose whole premise is tenants criticising their own
+// landlords, that is a retaliation risk, not a detail. The frontend never read
+// the field.
+//
+// It stays available on the caller's OWN reviews (/reviews/me) and to the admin
+// queue; ownership checks read the document from the database, not the
+// response, so they are unaffected.
+// `-moderation` too: a public read only ever returns visible reviews, so the
+// block carries nothing a reader needs  and `hiddenBy` is an admin's id, which
+// has no business in a public payload even by accident.
+const PUBLIC_REVIEW_FIELDS = '-user -moderation';
+
+// A hidden review is out of public view but still in the database (see the
+// `moderation` block on the model). Legacy rows have no `moderation` field at
+// all, and `$ne` matches a missing field, so this is safe without a migration.
+const VISIBLE_ONLY = { 'moderation.status': { $ne: 'hidden' } };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 // Neutralise regex metacharacters before compiling user input into a pattern.
@@ -39,14 +65,14 @@ const readPaging = (query = {}) => {
     return { page, limit, skip: (page - 1) * limit };
 };
 
-// Property.type is a schema enum — validate here so a bad value is a 400 rather
+// Property.type is a schema enum  validate here so a bad value is a 400 rather
 // than a raw Mongoose validation 500.
 const PROPERTY_TYPES = Property.schema.path('type').enumValues;
 
 // Recalculate a property's average rating + review count.
 //
 // When the last review of a property is deleted this writes {rating: 0,
-// reviewsCount: 0} and the Property document stays. That is deliberate — the
+// reviewsCount: 0} and the Property document stays. That is deliberate  the
 // document is an ADDRESS RECORD holding geocoded coordinates that cost a
 // Nominatim call to obtain, and a later review of the same address finds it by
 // addressKey and reuses them. Deleting it here would also race with a
@@ -55,8 +81,11 @@ const PROPERTY_TYPES = Property.schema.path('type').enumValues;
 // It is hidden from the browse grid and the map instead, by the
 // `reviewsCount: { $gt: 0 }` filter in propertyController.
 const recalcProperty = async (propertyId) => {
+    // Hidden reviews are excluded: a review taken down over a complaint must
+    // stop influencing the property's public score, or hiding it only does half
+    // the job.
     const stats = await Review.aggregate([
-        { $match: { property: new mongoose.Types.ObjectId(propertyId) } },
+        { $match: { property: new mongoose.Types.ObjectId(propertyId), ...VISIBLE_ONLY } },
         { $group: { _id: '$property', avg: { $avg: '$rating' }, count: { $sum: 1 } } },
     ]);
     const avg = stats[0]?.avg || 0;
@@ -69,7 +98,7 @@ const recalcProperty = async (propertyId) => {
 
 // ─── Background ID check ─────────────────────────────────────────────────────
 // OCR used to run inside the request: download the proof from Cloudinary (10s
-// timeout), load Tesseract's language data, recognise — all before the user got
+// timeout), load Tesseract's language data, recognise  all before the user got
 // a response, and capped at 2 concurrent, so a third simultaneous submission
 // simply waited with its connection held open.
 //
@@ -79,7 +108,7 @@ const recalcProperty = async (propertyId) => {
 // response and patches the document.
 //
 // If the process dies mid-check the review stays `pending`, which is exactly
-// where an unchecked submission belongs — the manual queue.
+// where an unchecked submission belongs  the manual queue.
 const runIdCheckInBackground = ({ reviewId, imageUrl, mimetype, idType, idNumber }) => {
     setImmediate(async () => {
         let update;
@@ -102,6 +131,40 @@ const runIdCheckInBackground = ({ reviewId, imageUrl, mimetype, idType, idNumber
                 { _id: reviewId, 'verification.reviewedAt': null },
                 { $set: update }
             );
+
+            // Verified means the document has done its job. Destroy it now and
+            // keep only the last four characters of the number  the same
+            // treatment a manual approval gets. Before this, an auto-verified
+            // submission kept its government ID in Cloudinary indefinitely.
+            if (update['verification.verified'] === true) {
+                const review = await Review.findById(reviewId).select('+verification');
+                if (review) {
+                    await retireIdProof(review, { verified: true, reason: 'match' });
+                }
+            } else {
+                // Not cleared automatically, so a human has to look. Until this
+                // existed, nothing said so: the queue was visible only to whoever
+                // happened to open the admin dashboard, and anything nobody
+                // opened was destroyed by the retention sweeper 30 days later.
+                //
+                // Deliberately NOT sent for auto-verified submissions. Those need
+                // nobody, and mailing about them would teach the reader to skim
+                // past the ones that matter.
+                const pending = await Review.countDocuments({
+                    'verification.reviewedAt': null,
+                    'verification.verified': false,
+                    'verification.idProof': { $nin: ['', null] },
+                });
+                // Fire and forget: a mail outage must not affect the submission.
+                notifyTeamOfPendingVerification(
+                    { _id: reviewId },
+                    {
+                        reason: update['verification.verifiedReason'],
+                        pending,
+                        expiresInDays: retentionDays(),
+                    }
+                ).catch(() => {});
+            }
         } catch (err) {
             console.error(`[id-verify] could not record result for review ${reviewId}:`, err.message);
         }
@@ -145,7 +208,7 @@ const createReview = async (req, res) => {
 
         // ── Files (from multer-storage-cloudinary; file.path is the Cloudinary URL) ──
         // Alongside each URL we keep an explicit asset reference. The URL is not a
-        // usable handle for deletion — `uploader.destroy` needs the resource type
+        // usable handle for deletion  `uploader.destroy` needs the resource type
         // and the delivery type, and neither survives the upload. Without these,
         // deleting a review would strand its photos and its ID proof in Cloudinary
         // forever. See utils/cloudinaryAssets.js.
@@ -168,18 +231,7 @@ const createReview = async (req, res) => {
             ? Number(price)
             : null;
 
-        // ── Automated OCR check ──────────────────────────────────────────────
-        // Advisory ONLY — it never blocks a submission. OCR is unreliable on real
-        // Indian IDs (Hindi+English text, glare, low contrast), so a genuine card
-        // the reader misses must still get through. Anything that isn't a strong
-        // match is stored with verified:false plus the reason, and goes to the
-        // manual review queue. (The old `if (!idCheck.ok) return 400` branch was
-        // provably dead — every return path in verifyIdProof sets ok:true — and
-        // has been removed rather than left as a misleading no-op.)
-        // The proof lives in the `authenticated` namespace, so the plain delivery
-        // URL now 401s. The background check needs a signed one — without this
-        // every submission would come back 'fetch-error' and silently land in the
-        // pending pile, which looks exactly like OCR simply never working.
+    
         idCheckUrl = signedAssetUrl(idProofAsset) || idProof;
 
         // ── Find or create the property ──────────────────────────────────────
@@ -189,9 +241,6 @@ const createReview = async (req, res) => {
             state: state.trim(),
         };
 
-        // Normalised key — "123 Oak St/Austin/TX" and "123 oak st/austin/tx" are
-        // the same building, so they must resolve to the same Property document,
-        // otherwise the {property, user} unique index never fires.
         addressKey = Property.buildAddressKey(addressQuery.streetAddress, addressQuery.city, addressQuery.state);
 
         let property = await Property.findOne({ addressKey });
@@ -201,13 +250,7 @@ const createReview = async (req, res) => {
             property = await Property.findOne(addressQuery);
         }
         if (!property) {
-            // Still nothing — but a legacy document stored as "123 Oak St" will
-            // miss BOTH lookups when this submission says "123 oak st": no
-            // addressKey to match, and the exact match is case-sensitive. That
-            // gap is live for every un-backfilled document between deploy and the
-            // manual migration, and it is exactly the duplicate this key was
-            // introduced to prevent. Catch it with a case-insensitive scan over
-            // the un-keyed documents only, so the cost stays bounded.
+   
             const legacyCandidates = await Property.find({
                 addressKey: { $in: [null, ''] },
                 city: new RegExp(`^${escapeRegex(addressQuery.city)}$`, 'i'),
@@ -230,13 +273,9 @@ const createReview = async (req, res) => {
 
         // Coordinates: prefer the address picker's lat/lng, fall back to geocoding.
         // The form values are attacker-controlled, so accept them only when both
-        // are finite and inside real WGS84 bounds — otherwise ignore and geocode.
+        // are finite and inside real WGS84 bounds  otherwise ignore and geocode.
         const fullAddress = `${streetAddress.trim()}, ${city.trim()}, ${state.trim()} ${zipCode?.trim() || ''}`;
-        // The client always sends lat/lng, sending '' when the user typed the
-        // address by hand instead of picking a suggestion. Number('') is 0, which
-        // is finite and inside WGS84 bounds — so coercing first would silently
-        // pin every hand-typed address to {0,0} off the coast of Africa and skip
-        // geocoding entirely. Require a non-empty raw value before coercing.
+      
         const hasRawCoord = (v) => v !== undefined && v !== null && String(v).trim() !== '';
         const formLat = Number(req.body.lat);
         const formLng = Number(req.body.lng);
@@ -272,11 +311,7 @@ const createReview = async (req, res) => {
                     location: `${city.trim()}, ${state.trim()}`,
                     type: propertyType,
                     price: numericPrice,
-                    // `image` is deliberately NOT set here. Any later failure in
-                    // this handler runs cleanupUploads(), which destroys the
-                    // uploaded assets — a property committed with a cover image
-                    // pointing at a destroyed asset renders broken for everyone,
-                    // forever. The cover is attached after Review.create succeeds.
+             
                     coords,
                 });
             } catch (err) {
@@ -288,14 +323,14 @@ const createReview = async (req, res) => {
             }
         } else {
             let changed = false;
-            // Cover image is attached only after the review is safely persisted —
+            // Cover image is attached only after the review is safely persisted 
             // see the note in Property.create above.
             if (!property.coords || property.coords.lat == null) {
                 const coords =
                     formCoords ||
                     (await geocodeAddress(fullAddress, { city: city.trim(), state: state.trim() }));
                 // geocodeAddress ALWAYS returns an object ({lat:null,lng:null} on
-                // failure), which is truthy — the old `if (coords)` meant every
+                // failure), which is truthy  the old `if (coords)` meant every
                 // later review of an unresolvable address re-geocoded and re-saved.
                 if (coords && coords.lat != null) { property.coords = coords; changed = true; }
             }
@@ -316,7 +351,10 @@ const createReview = async (req, res) => {
             photoAssets,
             verification: {
                 idType,
-                idNumber: idNumber.trim(),
+                // Encrypted at rest. OCR below receives the plaintext directly
+                // from the request; nothing ever needs to read it back except
+                // the admin queue, which decrypts for display.
+                idNumber: encrypt(idNumber.trim()),
                 idProof,
                 idProofAsset,
                 // Starts pending. The background check (see runIdCheckInBackground)
@@ -344,14 +382,14 @@ const createReview = async (req, res) => {
 
         await recalcProperty(property._id);
 
-        const safeReview = await Review.findById(newReview._id);
+        const safeReview = await Review.findById(newReview._id).select(PUBLIC_REVIEW_FIELDS);
 
         res.status(201).json({
             success: true,
             message: 'Review submitted successfully!',
             review: safeReview,
             propertyId: property._id,
-            // The automated check has not run yet — it starts below, after this
+            // The automated check has not run yet  it starts below, after this
             // response is on the wire. Every submission begins as pending.
             idVerified: false,
             idCheckPending: true,
@@ -367,7 +405,7 @@ const createReview = async (req, res) => {
     } catch (error) {
         if (error.code === 11000) {
             const keys = Object.keys(error.keyPattern || error.keyValue || {});
-            // The review's own {property, user} index — a genuine duplicate review.
+            // The review's own {property, user} index  a genuine duplicate review.
             if (keys.includes('user') && keys.includes('property')) {
                 return fail(409, 'You have already reviewed this property.');
             }
@@ -387,7 +425,7 @@ const createReview = async (req, res) => {
                             await property.save();
                         }
                         await recalcProperty(property._id);
-                        const safeReview = await Review.findById(created._id);
+                        const safeReview = await Review.findById(created._id).select(PUBLIC_REVIEW_FIELDS);
                         res.status(201).json({
                             success: true,
                             message: 'Review submitted successfully!',
@@ -401,7 +439,9 @@ const createReview = async (req, res) => {
                             reviewId: created._id,
                             imageUrl: idCheckUrl,
                             idType: reviewPayload.verification.idType,
-                            idNumber: reviewPayload.verification.idNumber,
+                            // The payload holds the ciphertext; OCR needs the number
+                            // as typed, which is still in the request body.
+                            idNumber: String(req.body.idNumber || '').trim(),
                         });
                         return;
                     }
@@ -428,7 +468,7 @@ const createReview = async (req, res) => {
 const getReviews = async (req, res) => {
     try {
         const { property, rating, sort } = req.query;
-        const filter = {};
+        const filter = { ...VISIBLE_ONLY };
         // Validate before these reach Mongo. Passing them straight through means
         // ?property=abc or ?rating=xyz raises a CastError that the catch turns
         // into a 500 for what is plainly a bad request.
@@ -456,6 +496,7 @@ const getReviews = async (req, res) => {
 
         const [reviews, total] = await Promise.all([
             Review.find(filter)
+                .select(PUBLIC_REVIEW_FIELDS)
                 .populate('property', 'title location type image')
                 .sort(sortOption)
                 .skip(skip)
@@ -463,7 +504,7 @@ const getReviews = async (req, res) => {
             Review.countDocuments(filter),
         ]);
 
-        // `reviews` stays a top-level key — the frontend reads it directly.
+        // `reviews` stays a top-level key  the frontend reads it directly.
         // page/limit/total/totalPages are pure additions.
         res.json({
             success: true,
@@ -483,8 +524,12 @@ const getReviews = async (req, res) => {
 // @desc    Get a single review
 const getReview = async (req, res) => {
     try {
-        const review = await Review.findById(req.params.id)
+        const review = await Review.findOne({ _id: req.params.id, ...VISIBLE_ONLY })
+            .select(PUBLIC_REVIEW_FIELDS)
             .populate('property', 'title location type image');
+        // A hidden review reads as absent rather than forbidden  saying
+        // "this exists but you may not see it" invites exactly the speculation
+        // that hiding it was meant to stop.
         if (!review) return res.status(404).json({ message: 'Review not found.' });
         res.json({ success: true, review });
     } catch (error) {
@@ -498,10 +543,14 @@ const getReview = async (req, res) => {
 const getPropertyReviews = async (req, res) => {
     try {
         const { page, limit, skip } = readPaging(req.query);
-        const filter = { property: req.params.propertyId };
+        const filter = { property: req.params.propertyId, ...VISIBLE_ONLY };
 
         const [reviews, total] = await Promise.all([
-            Review.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+            Review.find(filter)
+                .select(PUBLIC_REVIEW_FIELDS)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit),
             Review.countDocuments(filter),
         ]);
 
@@ -527,7 +576,14 @@ const getPropertyReviews = async (req, res) => {
 // @desc    Get the logged-in user's reviews
 const getMyReviews = async (req, res) => {
     try {
+        // Deliberately NOT filtered to visible: someone whose review was taken
+        // down should be able to see that, rather than watch it silently vanish.
+        // `moderation` rides along so the UI can say so.
         const reviews = await Review.find({ user: req.user.id })
+            // `moderation.status` rides along so the UI can say a review was
+            // taken down; who hid it and why does not  that is between the
+            // complainant and the moderator.
+            .select('-moderation.hiddenBy -moderation.hiddenReason')
             .populate('property', 'title location type image streetAddress city state')
             .sort({ createdAt: -1 });
         res.json({ success: true, count: reviews.length, reviews });
@@ -549,7 +605,7 @@ const updateReview = async (req, res) => {
         const { rating, reviewTitle, review: body, pros, cons } = req.body;
 
         if (rating !== undefined) {
-            // Whole numbers only — 4.7 used to pass the range check.
+            // Whole numbers only  4.7 used to pass the range check.
             if (!isValidRating(rating)) {
                 return res.status(400).json({ message: 'Rating must be a whole number between 1 and 5.' });
             }
@@ -577,6 +633,12 @@ const updateReview = async (req, res) => {
         if (pros !== undefined) review.pros = toLines(pros);
         if (cons !== undefined) review.cons = toLines(cons);
 
+        // Re-checked on edit, against the review as it will actually stand.
+        // Screening only on create would leave the filter one edit away from
+        // being pointless.
+        const pii = detectPersonalInfo(review.title, review.body, review.pros, review.cons);
+        if (pii) return res.status(400).json({ message: pii.message });
+
         // validateModifiedOnly: reviews written before `title`/`body` gained their
         // maxlength can be longer than the new limits. Without this, editing only
         // the rating of an old 6000-character review fails validation on a field
@@ -600,7 +662,7 @@ const updateReview = async (req, res) => {
  * A property's cover image is copied from the first photo of whichever review
  * happened to supply one. When that review is deleted its photos are destroyed,
  * so a cover still pointing at one would render as a broken image on the map,
- * the browse grid and the detail page — permanently, since nothing recomputes it.
+ * the browse grid and the detail page  permanently, since nothing recomputes it.
  *
  * Re-point it at a surviving review's photo, or clear it. Called BEFORE the
  * assets are destroyed so no request can catch the property mid-repair.
@@ -632,7 +694,7 @@ const repairPropertyImage = async (propertyId, removedUrls) => {
 const deleteReview = async (req, res) => {
     try {
         // `verification` and `photoAssets` are `select: false`, so they have to be
-        // asked for — they hold the only reliable handles on the Cloudinary assets.
+        // asked for  they hold the only reliable handles on the Cloudinary assets.
         const review = await Review.findById(req.params.id).select('+verification +photoAssets');
         if (!review) return res.status(404).json({ message: 'Review not found.' });
 
@@ -648,7 +710,16 @@ const deleteReview = async (req, res) => {
             return res.status(403).json({ message: 'You can only delete your own review.' });
         }
         if (!isOwner) {
-            console.warn(`[moderation] admin ${req.user.id} deleted review ${review._id} by user ${review.user}`);
+            console.warn(`[moderation] admin ${req.user.id} deleted review ${review._id}`);
+            recordAudit({
+                actor: req.user.id,
+                actorRole: req.user.role,
+                action: 'review.deleted_by_admin',
+                targetType: 'Review',
+                targetId: review._id,
+                meta: { author: String(review.user) },
+                ip: req.ip,
+            });
         }
 
         const propertyId = review.property;
@@ -689,7 +760,7 @@ const deleteReview = async (req, res) => {
 //
 // The ID check is advisory by design: nothing is ever hard-rejected at submission
 // time, so `verification.verified === false` means "a human still has to look at
-// this". This is the only endpoint that selects `verification` back in — it holds
+// this". This is the only endpoint that selects `verification` back in  it holds
 // the ID number and the proof image, which are `select: false` on the schema and
 // must never reach a normal user.
 const getPendingVerifications = async (req, res) => {
@@ -715,7 +786,7 @@ const getPendingVerifications = async (req, res) => {
         ]);
 
         // The stored `idProof` URL points into Cloudinary's `authenticated`
-        // namespace and returns 401 on its own — that is the whole point. Swap in
+        // namespace and returns 401 on its own  that is the whole point. Swap in
         // a signed URL so the reviewer can actually open the document, and drop
         // the raw asset reference, which is internal plumbing.
         const signedReviews = reviews.map((review) => {
@@ -724,10 +795,30 @@ const getPendingVerifications = async (req, res) => {
                 plain.verification.idProof =
                     signedAssetUrl(plain.verification.idProofAsset) || plain.verification.idProof;
                 delete plain.verification.idProofAsset;
+                // Stored encrypted; the reviewer needs the real value to compare
+                // against the document.
+                plain.verification.idNumber = decryptOrBlank(plain.verification.idNumber);
             }
             delete plain.photoAssets;
             return plain;
         });
+
+        // Access to government ID documents is audited to a collection that
+        // survives a restart  console output does not, and an audit trail you
+        // cannot query after a deploy is not an audit trail.
+        if (signedReviews.length > 0) {
+            recordAudit({
+                actor: req.user.id,
+                actorRole: req.user.role,
+                action: 'id_proof.viewed',
+                targetType: 'Review',
+                meta: {
+                    count: signedReviews.length,
+                    reviewIds: signedReviews.map((r) => String(r._id)),
+                },
+                ip: req.ip,
+            });
+        }
 
         res.json({
             success: true,
@@ -752,7 +843,7 @@ const getPendingVerifications = async (req, res) => {
 // pending pile had no exit. Approving or rejecting both close the item.
 //
 // Either decision DESTROYS the ID document and masks the stored number. The
-// proof exists to answer one question — is this person who they say they are —
+// proof exists to answer one question  is this person who they say they are 
 // and once a human has answered it, continuing to hold a government ID is
 // storage without a purpose. `idType` and the last four characters are kept so a
 // later dispute can be matched without retaining the identifier itself.
@@ -770,39 +861,33 @@ const decidePendingVerification = async (req, res) => {
             return res.status(409).json({ message: 'This submission has already been reviewed.' });
         }
 
-        // Capture the asset before the reference is cleared.
-        const proofAsset = review.verification?.idProofAsset?.publicId
-            ? review.verification.idProofAsset
-            : parseDeliveryUrl(review.verification?.idProof);
-
-        const rawNumber = String(review.verification?.idNumber || '');
-        const masked = rawNumber.length > 4 ? `••••${rawNumber.slice(-4)}` : '';
-
-        review.verification.verified = decision === 'approve';
-        review.verification.verifiedReason = decision === 'approve' ? 'manual-approved' : 'manual-rejected';
-        review.verification.reviewedAt = new Date();
-        review.verification.reviewedBy = req.user.id;
-        review.verification.idNumber = masked;
-        review.verification.idProof = '';
-        review.verification.idProofAsset = undefined;
-
-        await review.save({ validateModifiedOnly: true });
-
-        // Best-effort, and after the save: the decision is what matters, and a
-        // Cloudinary outage must not roll it back or 500 an admin who has already
-        // made the call. Failures are logged with the public_id for a manual sweep.
-        if (proofAsset) {
-            const { failed } = await destroyAssets([proofAsset]);
-            if (failed > 0) {
-                console.error(`[cleanup] review ${req.params.id}: ID proof survived deletion after ${decision}`);
-            }
+        // Destroys the document, masks the number and stamps the decision in one
+        // race-safe write (shared with the auto-verify and retention paths).
+        const { applied } = await retireIdProof(review, {
+            verified: decision === 'approve',
+            reason: decision === 'approve' ? 'manual-approved' : 'manual-rejected',
+            markReviewed: true,
+            reviewedBy: req.user.id,
+        });
+        if (!applied) {
+            return res.status(409).json({ message: 'This submission has already been reviewed.' });
         }
+
+        recordAudit({
+            actor: req.user.id,
+            actorRole: req.user.role,
+            action: 'id_proof.decided',
+            targetType: 'Review',
+            targetId: review._id,
+            meta: { decision },
+            ip: req.ip,
+        });
 
         res.json({
             success: true,
             message: decision === 'approve' ? 'Marked as verified.' : 'Marked as rejected.',
             reviewId: review._id,
-            verified: review.verification.verified,
+            verified: decision === 'approve',
         });
     } catch (error) {
         if (error.kind === 'ObjectId') return res.status(404).json({ message: 'Review not found.' });
@@ -812,6 +897,9 @@ const decidePendingVerification = async (req, res) => {
 };
 
 module.exports = {
+    VISIBLE_ONLY,
+    recalcProperty,
+    repairPropertyImage,
     createReview,
     getReviews,
     getReview,

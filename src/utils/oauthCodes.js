@@ -7,7 +7,7 @@ const TTL_SECONDS = Math.floor(TTL_MS / 1000);
 const PURPOSE = 'oauth-exchange';
 
 // Redeemed JTIs, so a code works exactly once. Entries are dropped once they are
-// older than the TTL — after that the token has expired on its own and the
+// older than the TTL  after that the token has expired on its own and the
 // record is redundant.
 const redeemed = new Map(); // jti -> expiry (ms)
 
@@ -48,7 +48,7 @@ const consumeCode = (code) => {
         return null;
     }
 
-    // Without this a normal session token would redeem here — and, more
+    // Without this a normal session token would redeem here  and, more
     // importantly, an exchange code must never be usable as one.
     if (payload.purpose !== PURPOSE || !payload.jti || !payload.token || !payload.user) {
         return null;

@@ -1,12 +1,12 @@
 const nodemailer = require('nodemailer');
 
 // sendEmail({ to, subject, html, text, replyTo })
-//   to       — recipient address (string, or comma-separated list)
-//   subject  — subject line
-//   html     — HTML body
-//   text     — optional plain-text alternative (better deliverability, and
+//   to        recipient address (string, or comma-separated list)
+//   subject   subject line
+//   html      HTML body
+//   text      optional plain-text alternative (better deliverability, and
 //              readable in text-only clients)
-//   replyTo  — optional Reply-To address. The contact form uses it so that
+//   replyTo   optional Reply-To address. The contact form uses it so that
 //              hitting "Reply" in the inbox answers the visitor directly.
 const sendEmail = async ({ to, subject, html, text, replyTo }) => {
     if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
@@ -25,7 +25,7 @@ const sendEmail = async ({ to, subject, html, text, replyTo }) => {
         family: 4,
     });
 
-    // `from` must stay our own authenticated SMTP identity — putting the
+    // `from` must stay our own authenticated SMTP identity  putting the
     // visitor's address there would get the mail SPF/DMARC-rejected. Their
     // address goes in Reply-To instead.
     await transporter.sendMail({

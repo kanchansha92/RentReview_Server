@@ -3,8 +3,8 @@ const Tesseract = require('tesseract.js');
 
 // Flip to true to block submissions that fail the OCR check (stricter, but
 // will sometimes reject genuine cards with poor-quality photos).
-// NOTE: the caller currently ignores `ok` entirely — the policy is "accept as
-// pending, never hard-reject" — so this only matters if that policy changes.
+// NOTE: the caller currently ignores `ok` entirely  the policy is "accept as
+// pending, never hard-reject"  so this only matters if that policy changes.
 const STRICT = false;
 
 // A hung Cloudinary/CDN fetch used to hold the whole request open forever.
@@ -15,7 +15,7 @@ const DEBUG_OCR_TEXT = process.env.ID_VERIFY_DEBUG_OCR === 'true';
 
 if (DEBUG_OCR_TEXT) {
     console.warn(
-        '⚠️  ID_VERIFY_DEBUG_OCR=true — the full OCR text of every ID proof (name, DOB, ID number) ' +
+        '⚠️  ID_VERIFY_DEBUG_OCR=true  the full OCR text of every ID proof (name, DOB, ID number) ' +
         'is being written to the log. Unset this outside local development.'
     );
 }
@@ -77,7 +77,7 @@ const ID_KEYWORDS = {
     'Voter ID': ['ELECTIONCOMMISSION', 'ELECTORAL', 'EPIC', 'IDENTITYCARD'],
 };
 
-// `mimetype` is accepted for logging only — it is client-supplied and is NEVER
+// `mimetype` is accepted for logging only  it is client-supplied and is NEVER
 // used to decide whether to run OCR (see sniffFormat above).
 async function verifyIdProof({ imageUrl, mimetype, idType, idNumber }) {
     // Secondary signal only: used to disambiguate bytes we can't identify.
@@ -98,7 +98,7 @@ async function verifyIdProof({ imageUrl, mimetype, idType, idNumber }) {
         // Tesseract can't OCR PDFs (or anything we can't identify) → accept, leave
         // for manual review. Declared mimetype logged purely for diagnostics.
         const reason = format === 'pdf' || pdfUrlHint ? 'pdf-skip' : 'unsupported-format';
-        console.log(`[id-verify] sniffed=${format} declared=${mimetype || 'n/a'} — skipping OCR (${reason}), marking pending review.`);
+        console.log(`[id-verify] sniffed=${format} declared=${mimetype || 'n/a'}  skipping OCR (${reason}), marking pending review.`);
         return { ok: true, autoVerified: false, reason, numberFound: false, keywordFound: false };
     }
 
@@ -113,12 +113,12 @@ async function verifyIdProof({ imageUrl, mimetype, idType, idNumber }) {
 
     const upper = text.toUpperCase();
 
-    // Number match — compare alphanumerics only, ignoring all OCR noise/spacing
+    // Number match  compare alphanumerics only, ignoring all OCR noise/spacing
     const alnumText = upper.replace(/[^A-Z0-9]/g, '');
     const alnumNumber = String(idNumber || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
     const numberFound = alnumNumber.length >= 6 && alnumText.includes(alnumNumber);
 
-    // Keyword match — compare with spaces removed so "AADHAAR" matches "A A D H A A R"-style spacing
+    // Keyword match  compare with spaces removed so "AADHAAR" matches "A A D H A A R"-style spacing
     const compactText = upper.replace(/\s/g, '');
     const keywords = ID_KEYWORDS[idType] || [];
     const keywordFound = keywords.some((k) => compactText.includes(k));
@@ -130,7 +130,7 @@ async function verifyIdProof({ imageUrl, mimetype, idType, idNumber }) {
     );
 
     if (DEBUG_OCR_TEXT) {
-        // Local tuning only — see the DEBUG_OCR_TEXT note at the top of this file.
+        // Local tuning only  see the DEBUG_OCR_TEXT note at the top of this file.
         console.log('[id-verify][DEBUG] OCR text (first 300 chars):', text.replace(/\n/g, ' ').slice(0, 300));
     }
 

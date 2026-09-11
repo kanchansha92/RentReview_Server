@@ -1,4 +1,5 @@
 const sendEmail = require('../utils/sendEmail');
+const { maskEmail } = require('../utils/redact');
 
 // ── Limits ────────────────────────────────────────────────────────────────────
 // Generous enough for a real enquiry, tight enough that the form cannot be used
@@ -10,7 +11,7 @@ const LIMITS = {
     message: 5000,
 };
 
-// Deliberately permissive — real-world addresses are stranger than most regexes
+// Deliberately permissive  real-world addresses are stranger than most regexes
 // allow. The authoritative check is whether the reply ever lands.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -25,7 +26,7 @@ const escapeHtml = (value) =>
         .replace(/'/g, '&#39;');
 
 // CR/LF in a header value is a header-injection vector (extra Bcc:, spoofed
-// Reply-To). Strip them from anything that reaches a header — subject, replyTo.
+// Reply-To). Strip them from anything that reaches a header  subject, replyTo.
 const stripNewlines = (value) => String(value).replace(/[\r\n]+/g, ' ').trim();
 
 const asString = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -45,14 +46,11 @@ const submitContactForm = async (req, res) => {
         const subject = asString(req.body?.subject);
         const message = asString(req.body?.message);
 
-        console.log(`CONTACT: submission received from ${email || '(no email)'}`);
+        console.log(`CONTACT: submission received from ${maskEmail(email)}`);
 
-        // Honeypot: a hidden field no human ever fills in. Bots fill everything.
-        // Answer 200 so the bot believes it succeeded and does not retry.
-        // Logged loudly: browser autofill can occasionally fill it too, and a
-        // silent 200 that sends nothing is otherwise impossible to diagnose.
+  
         if (asString(req.body?.website)) {
-            console.warn('CONTACT: honeypot field was filled — dropping, NO email sent.');
+            console.warn('CONTACT: honeypot field was filled  dropping, NO email sent.');
             return res.status(200).json({
                 success: true,
                 message: 'Thanks! Your message has been sent.',
@@ -83,7 +81,7 @@ const submitContactForm = async (req, res) => {
 
         const to = recipient();
         if (!to) {
-            // Misconfiguration, not the visitor's fault — log loudly, and do not
+            // Misconfiguration, not the visitor's fault  log loudly, and do not
             // pretend to the visitor that the message went somewhere.
             console.error('CONTACT: no recipient configured. Set CONTACT_RECEIVER_EMAIL (or FROM_EMAIL) in .env');
             return res.status(500).json({
@@ -149,7 +147,7 @@ const submitContactForm = async (req, res) => {
             replyTo: stripNewlines(email),
         });
 
-        console.log(`CONTACT: ✅ notification accepted by SMTP for delivery to ${to}`);
+        console.log('CONTACT: ✅ notification accepted by SMTP for delivery to the team inbox');
 
         // ── 2. Confirmation copy to the visitor ───────────────────────────────
         // Best-effort: the team already has the message, so a failure here must
@@ -157,7 +155,7 @@ const submitContactForm = async (req, res) => {
         try {
             await sendEmail({
                 to: stripNewlines(email),
-                subject: 'We received your message — RentReview',
+                subject: 'We received your message  RentReview',
                 html: `
                     <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#0F172A">
                       <div style="background:#3EB489;color:#fff;padding:24px;border-radius:12px 12px 0 0">
@@ -173,7 +171,7 @@ const submitContactForm = async (req, res) => {
                           <div style="white-space:pre-wrap">${safe.message}</div>
                         </div>
                         <p style="font-size:13px;color:#64748B;margin-bottom:0">
-                          You do not need to reply to this email — we will be in touch shortly.
+                          You do not need to reply to this email  we will be in touch shortly.
                         </p>
                       </div>
                     </div>`,
@@ -182,7 +180,7 @@ const submitContactForm = async (req, res) => {
                     `We have got your message and our team will get back to you within 24 hours.\n\n` +
                     `Subject: ${subject}\n\n${message}\n`,
             });
-            console.log(`CONTACT: ✅ confirmation accepted by SMTP for delivery to ${email}`);
+            console.log(`CONTACT: ✅ confirmation accepted by SMTP for delivery to ${maskEmail(email)}`);
         } catch (ackErr) {
             console.error('CONTACT: confirmation email to visitor failed:', ackErr.message);
         }

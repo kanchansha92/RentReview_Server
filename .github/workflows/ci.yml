@@ -1,0 +1,44 @@
+# Continuous checks for the RentReview API.
+#
+# Lives inside the backend repo because `backend/` and `frontend/` are separate
+# repositories — a workflow in a parent folder is not in any repo and GitHub
+# never sees it.
+#
+# Both packages were at zero known vulnerabilities when this was set up. Without
+# something watching, that drifts: the last manual audit found seven backend
+# advisories that had accumulated quietly. This is what notices.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  # Advisories are published against code you have not touched, so a quiet week
+  # can still leave you vulnerable. Check regardless.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # No database and no network needed — see tests/helpers.js for why that
+      # trade was made and what it therefore does not cover.
+      - name: Tests
+        run: npm test
+
+      # Fails on a HIGH or CRITICAL advisory in what actually ships.
+      # `--omit=dev` on purpose: a dev-only advisory should not block a deploy.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

@@ -42,7 +42,7 @@ const userSchema = new mongoose.Schema(
         // Email confirmation. Same shape as the reset-password pair below: the
         // token in the link is random, only its SHA-256 hash is stored, and it
         // expires. `isVerified` gates whether a Google/Facebook identity may be
-        // auto-linked to this account (see config/passport.js) — it does NOT gate
+        // auto-linked to this account (see config/passport.js)  it does NOT gate
         // signing in.
         //
         // These replace the old `otp` / `otpExpiry` fields, which no endpoint ever
@@ -67,6 +67,41 @@ const userSchema = new mongoose.Schema(
         passwordChangedAt: {
             type: Date,
         },
+
+        // ── Pending email change ─────────────────────────────────────────
+        // A new address is never applied on request. It is parked here until
+        // the NEW address confirms it, which proves the person asking can
+        // actually receive mail there. Without this, anyone holding a session
+        // could point the account at their own address and then use the normal
+        // password-reset flow to own it outright.
+        pendingEmail: {
+            type: String,
+            lowercase: true,
+            trim: true,
+            select: false,
+        },
+        pendingEmailToken: {
+            type: String,
+            select: false,
+        },
+        pendingEmailExpire: {
+            type: Date,
+            select: false,
+        },
+
+        // ── Sign-in lockout ──────────────────────────────────────────────
+        // Rate limiting is per IP and resets on restart, so it slows a
+        // credential-guessing run without ever stopping one. These two fields
+        // make the limit stick to the ACCOUNT, across IPs and across deploys.
+        failedLoginAttempts: {
+            type: Number,
+            default: 0,
+            select: false,
+        },
+        lockUntil: {
+            type: Date,
+            select: false,
+        },
     },
     { timestamps: true }
 );
@@ -89,6 +124,11 @@ userSchema.pre('save', async function () {
 // Compare passwords
 userSchema.methods.matchPassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
+};
+
+/** Is sign-in currently paused for this account? */
+userSchema.methods.isLocked = function () {
+    return Boolean(this.lockUntil && this.lockUntil.getTime() > Date.now());
 };
 
 module.exports = mongoose.model('User', userSchema);

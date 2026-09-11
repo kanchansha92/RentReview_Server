@@ -11,6 +11,11 @@ const {
     verifyEmail,
     resendVerification,
     exchangeOAuthCode,
+    exportMyData,
+    deleteMyAccount,
+    logout,
+    getCsrfToken,
+    confirmEmailChange,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 const createRateLimit = require('../middleware/rateLimit');
@@ -18,14 +23,14 @@ const { issueCode } = require('../utils/oauthCodes');
 const passport = require('passport');
 const jwt = require('jsonwebtoken');
 
-// --- Rate limiters (in-memory, per-instance — see middleware/rateLimit.js) ---
+// --- Rate limiters (in-memory, per-instance  see middleware/rateLimit.js) ---
 const normalizeEmail = (req) =>
     typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
 
 // TWO composed limiters, and both are needed.
 //
 // Per IP+email stops someone grinding one account's password. On its own it does
-// NOT stop credential stuffing — that attack is a list of distinct (email,
+// NOT stop credential stuffing  that attack is a list of distinct (email,
 // password) pairs, so every attempt lands in a fresh bucket and the limiter
 // never fires. The per-IP limiter is what caps total attempts from one source.
 // It sits well above what a real person hitting refresh would ever produce.
@@ -56,7 +61,7 @@ const registerLimiter = createRateLimit({
     message: 'Too many accounts created from this address. Please try again later.',
 });
 
-// Two composed limiters: one per IP, one per target email — so an attacker
+// Two composed limiters: one per IP, one per target email  so an attacker
 // can neither spray many addresses nor mail-bomb a single victim.
 // The per-email limiter below is what actually stops mail-bombing a victim; the
 // per-IP one only needs to be loose enough that shared networks still work.
@@ -110,18 +115,58 @@ const exchangeLimiter = createRateLimit({
     message: 'Too many sign-in attempts. Please try again later.',
 });
 
+// Deletion asks for the password, so it is a credential-guessing surface for
+// anyone holding a stolen token. Export is cheap but there is no reason to
+// let one account pull it in a loop.
+const deleteAccountLimiter = createRateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 5,
+    keyGenerator: (req) => `delete-account:${req.user?.id || req.ip}`,
+    message: 'Too many attempts. Please try again later.',
+});
+
+const exportLimiter = createRateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    keyGenerator: (req) => `export:${req.user?.id || req.ip}`,
+    message: 'Too many export requests. Please try again later.',
+});
+
 router.post('/register', registerLimiter, register);
 router.post('/login', loginIpLimiter, loginEmailLimiter, login);
 router.get('/me', protect, getMe);
 router.put('/me', protect, updateProfile);
+router.get('/me/export', protect, exportLimiter, exportMyData);
+router.delete('/me', protect, deleteAccountLimiter, deleteMyAccount);
 router.put('/change-password', protect, changePassword);
 router.post('/forgot-password', forgotPasswordIpLimiter, forgotPasswordEmailLimiter, forgotPassword);
 router.put('/reset-password/:token', resetPasswordLimiter, resetPassword);
+router.post('/logout', logout);
+// How the page learns the CSRF token when it cannot read the cookie (different
+// domain). Safe method, so it is never itself CSRF-gated. Rate limited because
+// it hands an anonymous caller a cookie.
+const csrfLimiter = createRateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    keyGenerator: (req) => `csrf:${req.ip}`,
+    message: 'Too many requests. Please try again later.',
+});
+router.get('/csrf', csrfLimiter, getCsrfToken);
 
-// Email confirmation. `resendVerification` is keyed on req.user, so its limiter
-// must sit AFTER `protect` — in front of it req.user does not exist yet and every
-// caller would share the IP bucket.
+// Applying a pending email change. The token in the link is the authorisation,
+// so this is public  same shape as reset-password and verify-email.
+const confirmEmailChangeLimiter = createRateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 20,
+    keyGenerator: (req) => `confirm-email:${req.ip}`,
+    message: 'Too many attempts. Please try again later.',
+});
+router.put('/confirm-email-change/:token', confirmEmailChangeLimiter, confirmEmailChange);
+
 router.put('/verify-email/:token', verifyEmailLimiter, verifyEmail);
+// `resendVerification` is keyed on req.user, so its limiter must sit AFTER
+// `protect`  in front of it req.user does not exist yet and every caller would
+// share one IP bucket.
 router.post('/resend-verification', protect, resendVerificationLimiter, resendVerification);
 
 // Exchange the one-time OAuth code for the JWT (see /auth-success on the frontend)
@@ -129,7 +174,7 @@ router.post('/exchange', exchangeLimiter, exchangeOAuthCode);
 
 // FRONTEND_URL may hold a comma-separated allow-list (see index.js CORS setup);
 // redirects always go to the first entry. Shared with the password-reset email
-// builder in authController — see utils/frontendUrl.js.
+// builder in authController  see utils/frontendUrl.js.
 const { frontendBaseUrl } = require('../utils/frontendUrl');
 
 // Shared OAuth callback: mint the JWT, stash it behind a short-lived one-time
@@ -140,6 +185,8 @@ const oauthCallback = (strategy) => (req, res, next) => {
         if (err || !user) {
             const reason = err ? err.message : (info && info.message) || 'unknown';
             console.warn(`OAuth login failed (${strategy}):`, reason);
+            // A failed `state` check is most likely an expired/forged callback;
+            // the user just needs to start again. No detail leaves the server.
             return res.redirect(`${frontendBaseUrl()}/signin?error=oauth`);
         }
 

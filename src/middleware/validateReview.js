@@ -1,21 +1,6 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Review request validation + Cloudinary orphan cleanup.
-//
-// The submission is multipart/form-data, so `req.body` does not exist until
-// multer has streamed every file to Cloudinary. That means the *body* checks
-// genuinely cannot run before the upload — the only honest fixes are:
-//
-//   1. `preUploadCheck` — the checks that need no body (auth, content type, a
-//      declared-size sanity cap) run BEFORE `upload.fields(...)` so the obvious
-//      junk never reaches Cloudinary at all.
-//   2. `cleanupUploads(req)` — every non-201 exit path in the controller (early
-//      return AND catch) destroys whatever multer already uploaded, so a 400 can
-//      no longer leave 110MB of orphaned assets behind.
-//   3. The cheap body checks live at the TOP of the controller (see
-//      `validateReviewBody`) so they run before the expensive OCR call.
-// ─────────────────────────────────────────────────────────────────────────────
 
 const { assetRefFromFile, destroyAssets } = require('../utils/cloudinaryAssets');
+const { detectPersonalInfo } = require('../utils/detectPersonalInfo');
 
 // upload.fields([{ idProof: 1 }, { photos: 10 }]) × 10MB each, plus slack for
 // the multipart envelope and the text fields.
@@ -78,6 +63,16 @@ const validateReviewBody = (body = {}) => {
         return `Review text must be ${LIMITS.review} characters or fewer.`;
     }
 
+  
+    const pii = detectPersonalInfo(
+        body.reviewTitle,
+        body.review,
+        body.pros,
+        body.cons,
+        body.name
+    );
+    if (pii) return pii.message;
+
     if (!isNonEmptyString(body.idType)) return 'ID type is required.';
     if (!isNonEmptyString(body.idNumber)) return 'ID number is required.';
     if (!isValidIdNumber(body.idType, body.idNumber)) {
@@ -87,24 +82,10 @@ const validateReviewBody = (body = {}) => {
     return null;
 };
 
-/**
- * Destroy every asset multer already pushed to Cloudinary for this request.
- *
- * Deletion goes through `destroyAssets`, which supplies the resource type and
- * the delivery type. Both matter: the ID proof is uploaded as
- * `type: 'authenticated'`, and `uploader.destroy` cannot find an authenticated
- * asset if it is asked for the default `upload` type — the call returns
- * "not found" and the document survives.
- *
- * Never throws — cleanup failure must not mask the response we're about to send.
- */
+
 const cleanupUploads = async (req) => {
     if (!req || !req.files || req._uploadsCleaned) return;
-    // Once the Review document referencing these URLs is committed, the assets
-    // belong to it — destroying them would leave a live review with dead photo
-    // links and a destroyed ID proof. Anything that fails AFTER Review.create
-    // (property.save, recalcProperty, the safeReview re-read) still lands in the
-    // generic catch, so this flag is what stops that path from eating them.
+
     if (req._uploadsCommitted) return;
     req._uploadsCleaned = true;
 
@@ -115,15 +96,7 @@ const cleanupUploads = async (req) => {
     await destroyAssets(refs);
 };
 
-/**
- * Mounted BEFORE `upload.fields(...)` on POST /api/reviews.
- * `protect` has already run, so req.user is populated here.
- *
- * The duplicate-review check can't happen at this point — it needs the property,
- * which needs the address, which is inside the multipart body that hasn't been
- * parsed yet. It stays in the controller (and its early return goes through
- * cleanupUploads).
- */
+
 const preUploadCheck = (req, res, next) => {
     if (!req.user) {
         return res.status(401).json({ message: 'Not authorised.' });

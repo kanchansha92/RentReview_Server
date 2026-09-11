@@ -33,7 +33,7 @@ const main = async () => {
         const label = `review ${review._id}`;
 
         if (!parsed) {
-            console.warn(`  ?  ${label}: could not parse the stored URL — skipping\n     ${url}`);
+            console.warn(`  ?  ${label}: could not parse the stored URL  skipping\n     ${url}`);
             skipped += 1;
             continue;
         }

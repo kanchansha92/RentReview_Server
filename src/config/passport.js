@@ -2,6 +2,10 @@ const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const FacebookStrategy = require('passport-facebook').Strategy;
 const User = require('../models/User');
+// CSRF protection for the OAuth round-trip — see utils/oauthStateStore.js.
+// One instance is shared: it holds no per-request state.
+const { StatelessStateStore } = require('../utils/oauthStateStore');
+const stateStore = new StatelessStateStore();
 
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     passport.use(
@@ -10,6 +14,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
                 clientID: process.env.GOOGLE_CLIENT_ID,
                 clientSecret: process.env.GOOGLE_CLIENT_SECRET,
                 callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`,
+                store: stateStore,
             },
             async (accessToken, refreshToken, profile, done) => {
                 try {
@@ -62,6 +67,7 @@ if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
                 clientSecret: process.env.FACEBOOK_APP_SECRET,
                 callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/facebook/callback`,
                 profileFields: ['id', 'displayName', 'emails'],
+                store: stateStore,
             },
             async (accessToken, refreshToken, profile, done) => {
                 try {

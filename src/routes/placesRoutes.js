@@ -1,24 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Server-side proxy for the Ola Maps Places API.
-//
-// The frontend used to call https://api.olamaps.io directly with
-// VITE_OLA_MAPS_API_KEY, which Vite inlines into the bundle at build time — the
-// key was visible in devtools, the Network tab, referrer headers and proxy logs.
-// The key now lives only here, as the server-side env var OLA_MAPS_API_KEY.
-//
-//   REQUIRED ENV VAR: OLA_MAPS_API_KEY  (set it on Render)
-//
-// Endpoints mirrored — the frontend calls exactly one Ola endpoint today:
-//   GET /places/v1/autocomplete   ← AddressAutocomplete.jsx, Hero.jsx
-// (Ola's autocomplete returns lat/lng inline, so there is no Details, Geocode or
-// Reverse-Geocode call to mirror. Add one here if that ever changes.)
-//
-// The upstream JSON body and status are returned VERBATIM: the frontend parses
-// Ola's exact response shape (`data.predictions[].description`,
-// `.structured_formatting.main_text`, `.geometry.location.{lat,lng}`).
-//
-// No new dependencies — Node 18+ global fetch, same as utils/geocode.js.
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 const express = require('express');
 const router = express.Router();
@@ -30,11 +10,6 @@ const OLA_BASE = 'https://api.olamaps.io';
 const MAX_INPUT_LENGTH = 200;
 const UPSTREAM_TIMEOUT_MS = 10000;
 
-// 180 requests/minute per IP. Autocomplete is debounced at 300ms client-side and
-// fires on almost every keystroke pause, so filling one address form costs
-// 10-20 requests — and an office or campus puts many users behind one IP. 60 was
-// low enough that a handful of concurrent users would trip it. A scraper still
-// hits the ceiling quickly, and the client degrades softly on 429.
 const placesRateLimit = createRateLimit({
     windowMs: 60 * 1000,
     max: 180,
@@ -49,7 +24,7 @@ router.use(placesRateLimit);
 router.get('/autocomplete', async (req, res) => {
     const apiKey = process.env.OLA_MAPS_API_KEY;
     if (!apiKey) {
-        console.error('[places] OLA_MAPS_API_KEY is not set — address autocomplete is disabled.');
+        console.error('[places] OLA_MAPS_API_KEY is not set  address autocomplete is disabled.');
         return res.status(503).json({ message: 'Address lookup is not configured on the server.' });
     }
 
@@ -71,7 +46,7 @@ router.get('/autocomplete', async (req, res) => {
             signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
         });
 
-        // Pass the body and status through untouched — the client parses Ola's
+        // Pass the body and status through untouched  the client parses Ola's
         // exact response shape.
         const text = await upstream.text();
         res.status(upstream.status)
@@ -84,19 +59,7 @@ router.get('/autocomplete', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/places/geocode?q=...
-//
-// Server-side proxy for OpenStreetMap Nominatim, used by the map to place a pin
-// for a property with no stored coordinates.
-//
-// The map used to call nominatim.openstreetmap.org DIRECTLY FROM THE BROWSER,
-// serially, for up to 25 properties per page load. A browser cannot set a
-// User-Agent, so those requests arrived at OSM as anonymous bulk traffic from
-// the visitor's own IP — which is exactly what their usage policy prohibits, and
-// what gets addresses blocked. Routed through here they carry the identifying
-// User-Agent from utils/geocode.js instead, and are rate limited per IP.
-// ─────────────────────────────────────────────────────────────────────────────
+
 router.get('/geocode', async (req, res) => {
     const q = req.query.q;
     if (typeof q !== 'string' || !q.trim()) {
@@ -107,7 +70,7 @@ router.get('/geocode', async (req, res) => {
     }
     if (!USER_AGENT) {
         // GEOCODER_CONTACT is unset, so geocoding is off (see utils/geocode.js).
-        // Shape-compatible empty result — the caller just gets no pin.
+        // Shape-compatible empty result  the caller just gets no pin.
         return res.json({ lat: null, lng: null });
     }
 

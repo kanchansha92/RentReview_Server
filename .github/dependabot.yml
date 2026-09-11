@@ -1,0 +1,26 @@
+# Keep dependencies current so a security bump is a small routine PR rather than
+# a large risky one during an incident.
+#
+# Grouped deliberately: ungrouped Dependabot produces a PR per package, they get
+# ignored, and the whole thing stops working. One batched PR a week is something
+# a person actually merges. Security updates still arrive immediately and
+# unbatched, and majors stay separate — cloudinary 1.x→2.x and nodemailer 8.x→10.x
+# both needed code changes, and batching those makes it impossible to tell which
+# bump broke something.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

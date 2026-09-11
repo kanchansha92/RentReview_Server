@@ -29,7 +29,7 @@ const createReviewLimiter = createRateLimit({
 
 // ── Admin ─────────────────────────────────────────────────────────────────
 // The ID-verification queue. Reviews whose OCR check didn't auto-verify sit here
-// waiting on a human — without this route the `verified: false` records the
+// waiting on a human  without this route the `verified: false` records the
 // submission flow writes are unreachable by anyone. This is also the only place
 // `verification` (idNumber / idProof, `select: false` on the schema) is ever
 // read back, so it must be admin-gated. Declared BEFORE '/:id' or Express would
@@ -43,7 +43,7 @@ router.get(
 
 // Record a decision and close the item. Without this the queue had no exit: an
 // admin could read the pending pile but never act on it, so nothing ever left.
-// Approving or rejecting both destroy the ID document — see the handler.
+// Approving or rejecting both destroy the ID document  see the handler.
 // Three path segments, so this cannot be captured by the '/:id' routes below.
 router.put(
     '/admin/:id/verification',
@@ -63,7 +63,7 @@ router.get('/:id', getReview);
 // Cloudinary; the body-dependent checks can't run until multer has parsed the
 // multipart payload, so they live at the top of createReview and every non-201
 // exit there calls cleanupUploads(). Multer errors (fileFilter / LIMIT_FILE_SIZE)
-// are deliberately NOT caught here — they carry a status and are handled by the
+// are deliberately NOT caught here  they carry a status and are handled by the
 // global error handler in index.js.
 router.post(
     '/',

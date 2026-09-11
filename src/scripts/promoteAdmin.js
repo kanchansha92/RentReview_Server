@@ -55,8 +55,8 @@ const main = async () => {
 
     console.log(`${user.email}: ${previous} → ${target}`);
     if (target === 'admin') {
-        console.log('\nNOTE: existing JWTs carry no role — the role is read from the database on every');
-        console.log('request — so this takes effect immediately, with no need to sign out and back in.');
+        console.log('\nNOTE: existing JWTs carry no role  the role is read from the database on every');
+        console.log('request  so this takes effect immediately, with no need to sign out and back in.');
     }
 
     await mongoose.disconnect();

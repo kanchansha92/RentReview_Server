@@ -11,12 +11,12 @@ const PHOTO_FOLDER = 'rent-review/photos';
 // Escape hatch. Private delivery is the default and should stay on; this exists
 // so a Cloudinary account that rejects authenticated uploads can be rolled back
 // with an env var instead of a redeploy. Set to the literal string 'false' to
-// disable — anything else (including unset) keeps proofs private.
+// disable  anything else (including unset) keeps proofs private.
 const ID_PROOFS_PRIVATE = process.env.CLOUDINARY_PRIVATE_ID_PROOFS !== 'false';
 
 if (!ID_PROOFS_PRIVATE) {
     console.warn(
-        '⚠️  CLOUDINARY_PRIVATE_ID_PROOFS=false — ID proofs are being uploaded to the PUBLIC ' +
+        '⚠️  CLOUDINARY_PRIVATE_ID_PROOFS=false  ID proofs are being uploaded to the PUBLIC ' +
         'Cloudinary namespace. Anyone with the URL can read them. Unset this in production.'
     );
 }
@@ -58,7 +58,7 @@ const parseDeliveryUrl = (url) => {
  * Build the durable reference for a file multer just uploaded.
  *
  * The delivery URL Cloudinary handed back states which namespace the asset
- * actually landed in, so it is trusted over what we asked for — the stored
+ * actually landed in, so it is trusted over what we asked for  the stored
  * reference then cannot drift from reality if the upload options ever change or
  * an account setting overrides them.
  *
@@ -71,7 +71,7 @@ const assetRefFromFile = (file) => {
     const isIdProof = file.fieldname === 'idProof';
 
     return {
-        // `filename` is the public_id — the one field the storage engine does set.
+        // `filename` is the public_id  the one field the storage engine does set.
         publicId: file.filename,
         format: (fromUrl && fromUrl.format) || MIME_TO_FORMAT[String(file.mimetype || '').toLowerCase()] || '',
         resourceType: (fromUrl && fromUrl.resourceType) || 'image',
@@ -133,13 +133,13 @@ const destroyAssets = async (refs = []) => {
                     type: ref.deliveryType,
                     invalidate: true,
                 });
-                // 'not found' is a success for our purposes — the asset is gone.
+                // 'not found' is a success for our purposes  the asset is gone.
                 const result = res && res.result;
                 if (result === 'ok' || result === 'not found') return true;
                 console.warn('[cloudinary] destroy returned', result, 'for', ref.publicId);
                 return false;
             } catch (err) {
-                console.error('[cloudinary] could not destroy', ref.publicId, '—', err.message);
+                console.error('[cloudinary] could not destroy', ref.publicId, '', err.message);
                 return false;
             }
         })
