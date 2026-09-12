@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Report = require('../models/Report');
 const { REASONS, RELATIONSHIPS } = require('../models/Report');
 const Review = require('../models/Review');
-const { recalcProperty } = require('./reviewController');
+const { recalcProperty, purgeReview } = require('./reviewController');
 const { recordAudit } = require('../models/AuditLog');
 const { maskEmail } = require('../utils/redact');
 const { detectPersonalInfo } = require('../utils/detectPersonalInfo');
@@ -165,7 +165,7 @@ const decideReport = async (req, res) => {
         const note = asString(req.body?.note);
         const replyText = asString(req.body?.replyText);
 
-        const VALID = ['dismissed', 'review-hidden', 'reply-published', 'both'];
+        const VALID = ['dismissed', 'review-hidden', 'reply-published', 'both', 'review-deleted'];
         if (!VALID.includes(outcome)) {
             return res.status(400).json({ message: `Outcome must be one of: ${VALID.join(', ')}.` });
         }
@@ -181,6 +181,20 @@ const decideReport = async (req, res) => {
 
         const publishesReply = outcome === 'reply-published' || outcome === 'both';
         const hidesReview = outcome === 'review-hidden' || outcome === 'both';
+        // Permanent and irreversible, and it stands alone: there is no combined
+        // 'delete AND publish the reply' outcome, because a reply is published
+        // beneath a review and after this there is no review to publish it under.
+        const deletesReview = outcome === 'review-deleted';
+
+        // Deletion cannot be undone and the review is gone as evidence, so the
+        // note is the only surviving record of why it was done  require one.
+        // Every other outcome leaves the review (or its hidden record) behind.
+        if (deletesReview && !note) {
+            return res.status(400).json({
+                message: 'Deleting a review permanently requires a note explaining why. '
+                    + 'Choose "hide" instead if this might need to be undone.',
+            });
+        }
 
         // What actually gets published: whatever the admin edited in the box,
         // falling back to what was submitted. An admin trimming a reply before
@@ -206,14 +220,46 @@ const decideReport = async (req, res) => {
             }
         }
 
-        const review = await Review.findById(report.review);
-        if (!review && (publishesReply || hidesReview)) {
+        // '+verification +photoAssets' are `select: false` and carry the only
+        // reliable handles on the Cloudinary assets, so a delete has to ask for
+        // them. Nothing else here reads them, and they are the most sensitive
+        // fields on the document, so they are only loaded when they are needed.
+        const reviewQuery = Review.findById(report.review);
+        if (deletesReview) reviewQuery.select('+verification +photoAssets');
+        const review = await reviewQuery;
+
+        if (!review && (publishesReply || hidesReview || deletesReview)) {
             return res.status(410).json({
                 message: 'The review this report is about no longer exists. Dismiss the report instead.',
             });
         }
 
-        if (review) {
+        if (review && deletesReview) {
+            // Logged and audited BEFORE the document goes: once purgeReview has
+            // run there is nothing left to read the author's id off.
+            console.warn(
+                `[moderation] admin ${req.user.id} permanently deleted review ${review._id} on report ${report._id}`
+            );
+            recordAudit({
+                actor: req.user.id,
+                actorRole: req.user.role,
+                action: 'review.deleted_by_admin',
+                targetType: 'Review',
+                targetId: review._id,
+                meta: {
+                    author: String(review.user),
+                    report: String(report._id),
+                    reason: report.reason,
+                },
+                ip: req.ip,
+            });
+            // Document, rating, cover image, photos and the ID proof. Awaited: if
+            // this throws, the report stays pending rather than being closed over
+            // a review that is still live.
+            await purgeReview(review);
+        }
+
+        if (review && !deletesReview) {
             if (hidesReview) {
                 review.moderation.status = 'hidden';
                 review.moderation.hiddenReason = report.reason;

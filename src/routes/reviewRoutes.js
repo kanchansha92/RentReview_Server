@@ -8,6 +8,7 @@ const createRateLimit = require('../middleware/rateLimit');
 const {
     createReview,
     getReviews,
+    getAllReviewsForAdmin,
     getReview,
     getPropertyReviews,
     getMyReviews,
@@ -39,6 +40,17 @@ router.get(
     protect,
     authorizeRoles('admin'),
     getPendingVerifications
+);
+
+// The moderation list: every review, hidden ones included, newest first, with
+// ?q= / ?status= / ?page=. Admin-gated because it returns rows the public list
+// withholds  the hidden ones, and the `moderation` block naming who hid them.
+// Also declared BEFORE '/:id', or 'admin' would be read as a review id.
+router.get(
+    '/admin/all',
+    protect,
+    authorizeRoles('admin'),
+    getAllReviewsForAdmin
 );
 
 // Record a decision and close the item. Without this the queue had no exit: an

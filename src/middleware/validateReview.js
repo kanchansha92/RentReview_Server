@@ -15,18 +15,62 @@ const ID_RULES = {
     'Voter ID': /^[A-Z]{3}[0-9]{7}$/,
 };
 
+// ─── Aadhaar check digit (Verhoeff) ──────────────────────────────────────────
+// Every real Aadhaar number carries a Verhoeff check digit, so `/^\d{12}$/`
+// alone accepted any twelve digits at all  000000000000 included. This is the
+// standard Verhoeff algorithm: the dihedral group D5 multiplication table, its
+// permutation table, and the inverse table.
+const VERHOEFF_D = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
+    [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+    [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
+    [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
+    [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+    [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
+    [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
+    [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+    [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+];
+const VERHOEFF_P = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
+    [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+    [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
+    [9, 4, 5, 3, 1, 2, 6, 8, 7, 0],
+    [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+    [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
+    [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
+];
+
+const isValidAadhaar = (digits) => {
+    if (!/^\d{12}$/.test(digits)) return false;
+    // UIDAI never issues a number starting with 0 or 1.
+    if (digits[0] === '0' || digits[0] === '1') return false;
+
+    let c = 0;
+    const reversed = digits.split('').reverse();
+    for (let i = 0; i < reversed.length; i += 1) {
+        c = VERHOEFF_D[c][VERHOEFF_P[i % 8][Number(reversed[i])]];
+    }
+    return c === 0;
+};
+
 const isValidIdNumber = (idType, idNumber) => {
     const rx = ID_RULES[idType];
     if (!rx) return false;
     const clean = String(idNumber || '').replace(/[\s-]/g, '').toUpperCase();
-    return rx.test(clean);
+    if (!rx.test(clean)) return false;
+    // Format alone is not enough for Aadhaar  it has a check digit.
+    if (idType === 'Aadhaar Card') return isValidAadhaar(clean);
+    return true;
 };
 
 // A present, non-empty string. Guards against `{"reviewTitle": 123}` reaching
 // `.trim()` and turning a 400 into a 500.
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
-// 1–5 inclusive AND a whole number — 4.7 used to be accepted.
+// 1–5 inclusive AND a whole number  4.7 used to be accepted.
 const isValidRating = (value) => {
     const n = Number(value);
     return Number.isInteger(n) && n >= 1 && n <= 5;
@@ -76,7 +120,11 @@ const validateReviewBody = (body = {}) => {
     if (!isNonEmptyString(body.idType)) return 'ID type is required.';
     if (!isNonEmptyString(body.idNumber)) return 'ID number is required.';
     if (!isValidIdNumber(body.idType, body.idNumber)) {
-        return `The ID number does not match the format for ${body.idType}.`;
+        return body.idType === 'Aadhaar Card'
+            // Distinguish "wrong shape" from "twelve digits that are not a real
+            // Aadhaar number", so someone who mistyped one digit knows to look.
+            ? 'That is not a valid Aadhaar number. Please check the 12 digits and try again.'
+            : `The ID number does not match the format for ${body.idType}.`;
     }
 
     return null;
@@ -126,6 +174,7 @@ module.exports = {
     validateReviewBody,
     cleanupUploads,
     isValidIdNumber,
+    isValidAadhaar,
     isNonEmptyString,
     isValidRating,
     ID_RULES,

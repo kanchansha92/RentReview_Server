@@ -1,23 +1,10 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// The two data-subject rights every privacy regime grants (GDPR Art. 15/17,
-// India's DPDP Act s.11/12): see what we hold about you, and have it erased.
-//
-// Until this existed the "Delete Account" button in Settings was decorative —
-// no handler, no endpoint — and there was no way to obtain a copy of one's data
-// short of emailing support.
-// ─────────────────────────────────────────────────────────────────────────────
 
 const Review = require('../models/Review');
 const User = require('../models/User');
 const { collectReviewAssets, destroyAssets } = require('./cloudinaryAssets');
 const { recalcProperty, repairPropertyImage } = require('../controllers/reviewController');
 
-/**
- * Everything we hold about a user, as plain JSON. The ID number and proof are
- * deliberately NOT included even in masked form: the export is downloaded to
- * whatever device the user is on, and the whole point of the verification
- * design is that the identifier does not travel.
- */
+
 const exportUserData = async (userId) => {
     const user = await User.findById(userId);
     if (!user) return null;

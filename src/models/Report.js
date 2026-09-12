@@ -22,6 +22,13 @@ const OUTCOMES = [
     'review-hidden',    // taken out of public view, record kept
     'reply-published',  // the owner's response is now shown under the review
     'both',             // reply published AND review hidden
+    // Gone for good: document, photos and the ID proof destroyed. Hiding answers
+    // almost every complaint because it can be undone; this is for the cases
+    // where the content must not continue to exist anywhere  doxxing, illegal
+    // content, or an erasure request we are obliged to honour. A distinct
+    // outcome rather than reusing 'dismissed', so the resolved queue never
+    // misreports a permanent deletion as "no action taken".
+    'review-deleted',
 ];
 
 const reportSchema = new mongoose.Schema(

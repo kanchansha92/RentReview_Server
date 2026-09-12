@@ -76,6 +76,14 @@ const notifyReportResolved = (report, outcome, note) => {
         'both':
             `<p style="color:#374151">We've <strong>removed the review from public view</strong> and
              <strong>published your response</strong>.</p>`,
+        'review-deleted':
+            `<p style="color:#374151">We've looked at the review you reported and
+             <strong>deleted it permanently</strong>. It is gone from the site along with any photos
+             attached to it, and it cannot be put back.</p>
+             ${report.requestedReply
+                ? `<p style="color:#374151">Your response has not been published  it would have appeared
+                   beneath the review, and there is no longer a review for it to sit under.</p>`
+                : ''}`,
     }[outcome] || `<p style="color:#374151">We've finished reviewing your report.</p>`;
 
     return send(

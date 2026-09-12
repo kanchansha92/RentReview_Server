@@ -93,7 +93,19 @@ const toPlainRef = (ref) => {
 };
 
 
-const signedAssetUrl = (ref) => {
+/**
+ * Build a delivery URL for an asset, signed when the asset is private.
+ *
+ * @param {object} ref  stored asset reference
+ * @param {object} [options]
+ * @param {Array}  [options.transformation]  Cloudinary transformation chain. The ID
+ *        check uses this to request a render OCR can actually read (upscaled,
+ *        greyscale, sharpened) and to rasterise page 1 of a PDF. It is signed along
+ *        with the rest of the URL, so derived renders of an `authenticated` asset
+ *        stay just as private as the original.
+ * @param {string} [options.format]  override the delivered format (e.g. 'jpg' for a PDF page).
+ */
+const signedAssetUrl = (ref, options = {}) => {
     const plain = toPlainRef(ref);
     if (!plain) return '';
 
@@ -101,7 +113,8 @@ const signedAssetUrl = (ref) => {
         return cloudinary.url(plain.publicId, {
             resource_type: plain.resourceType,
             type: plain.deliveryType,
-            format: plain.format || undefined,
+            format: options.format || plain.format || undefined,
+            ...(options.transformation ? { transformation: options.transformation } : {}),
             // A public asset signs harmlessly, but there is no reason to.
             sign_url: plain.deliveryType !== 'upload',
             secure: true,

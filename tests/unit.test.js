@@ -145,5 +145,113 @@ t.check('audit log holds ids, not personal data, and expires', () => {
 t.check('reports start pending', () =>
     assert.equal(Report.schema.path('status').options.default, 'pending'));
 
+// ── ID proof verification ────────────────────────────────────────────────────
+// The check is a gate now: a document that cannot be matched to the selected ID
+// type AND the typed number is rejected at submit. These cover the matching
+// itself — the part that decides whether a real card passes and a fake does not.
+const idv = require('../src/utils/verifyId');
+const { isValidAadhaar } = require('../src/middleware/validateReview');
+
+// OCR output as it actually comes back from a photographed Aadhaar card:
+// letter-spaced, mixed script, and with an O read where a 0 is printed.
+const AADHAAR_TEXT = idv.fold(`GOVERNMENT OF INDIA
+KANCHAN KUMAR  DOB: 14/08/1996  MALE
+2345 6789 O124
+UNIQUE IDENTIFICATION AUTHORITY OF INDIA`.toUpperCase());
+
+t.check('reads a genuine Aadhaar despite OCR glyph confusion', () => {
+    assert(idv.findKeyword(AADHAAR_TEXT, idv.ID_KEYWORDS['Aadhaar Card']), 'keyword');
+    assert(idv.findNumber(AADHAAR_TEXT, '234567890124'), 'number, with O read for 0');
+});
+t.check('a different number on the same card does not match', () =>
+    assert.equal(idv.findNumber(AADHAAR_TEXT, '987654321098'), false));
+
+t.check('a screenshot of the digits alone is not an ID', () => {
+    const notepad = idv.fold('Untitled - Notepad  File Edit Format View Help  234567890124');
+    assert(idv.findNumber(notepad, '234567890124'), 'the number is there');
+    assert.equal(idv.findKeyword(notepad, idv.ID_KEYWORDS['Aadhaar Card']), false, 'but nothing says Aadhaar');
+    assert.equal(idv.detectType(notepad), '', 'and it is not any other document either');
+});
+
+t.check('each ID type is recognised from its own document', () => {
+    const cases = {
+        'PAN Card': 'INCOME TAX DEPARTMENT GOVT. OF INDIA Permanent Account Number ABCDE1234F',
+        'Voter ID': 'ELECTION COMMISSION OF INDIA ELECTORS PHOTO IDENTITY CARD ABC1234567',
+        'Passport': 'REPUBLIC OF INDIA PASSPORT Type P Country Code IND A1234567',
+        'Driving License': 'TRANSPORT DEPARTMENT DRIVING LICENCE DL No KA0120201234567',
+    };
+    for (const [type, text] of Object.entries(cases)) {
+        const folded = idv.fold(text);
+        assert(idv.findKeyword(folded, idv.ID_KEYWORDS[type]), `${type} keyword`);
+        assert.equal(idv.detectType(folded), type, `${type} detected`);
+    }
+});
+
+t.check('a PAN uploaded as an Aadhaar is identified as the wrong document', () => {
+    const pan = idv.fold('INCOME TAX DEPARTMENT Permanent Account Number ABCDE1234F');
+    assert.equal(idv.detectType(pan), 'PAN Card');
+});
+
+t.check('a masked Aadhaar passes only on its real last four', () => {
+    const masked = idv.fold('GOVERNMENT OF INDIA UIDAI XXXX XXXX 0124');
+    assert(idv.findMaskedNumber(masked, '234567890124'), 'last four match');
+    assert.equal(idv.findMaskedNumber(masked, '234567899998'), false, 'last four differ');
+});
+
+t.check('Aadhaar numbers must carry a valid check digit', () => {
+    assert(isValidAadhaar('234567890124'), 'a valid number');
+    assert.equal(isValidAadhaar('234567890123'), false, 'one digit off');
+    assert.equal(isValidAadhaar('000000000000'), false, 'all zeros');
+    assert.equal(isValidAadhaar('123456789012'), false, 'never starts with 1');
+});
+
+t.check('the whole verdict: right document, right number → accepted', () => {
+    const card = 'GOVERNMENT OF INDIA  UIDAI  KANCHAN KUMAR  2345 6789 O124';
+    assert.equal(idv.evaluateText(card, 'Aadhaar Card', '234567890124').matched, true);
+});
+t.check('the whole verdict: right document, wrong number → refused', () => {
+    const card = 'GOVERNMENT OF INDIA  UIDAI  KANCHAN KUMAR  2345 6789 O124';
+    const r = idv.evaluateText(card, 'Aadhaar Card', '987654321098');
+    assert.equal(r.matched, false, 'must not pass');
+    assert.equal(r.keywordFound, true, 'it is an Aadhaar card');
+    assert.equal(r.numberFound, false, 'but not that number');
+});
+t.check('the whole verdict: PAN selected, PAN number that is not on the card → refused', () => {
+    const card = 'INCOME TAX DEPARTMENT  GOVT. OF INDIA  Permanent Account Number  ABCDE1234F';
+    assert.equal(idv.evaluateText(card, 'PAN Card', 'ABCDE1234F').matched, true, 'the number on the card');
+    assert.equal(idv.evaluateText(card, 'PAN Card', 'ZZZZZ9999Z').matched, false, 'a different PAN');
+});
+t.check('the whole verdict: wrong document for the selected type → refused', () => {
+    const card = 'INCOME TAX DEPARTMENT  Permanent Account Number  ABCDE1234F';
+    const r = idv.evaluateText(card, 'Aadhaar Card', '234567890124');
+    assert.equal(r.matched, false);
+    assert.equal(r.detectedType, 'PAN Card', 'and we can say what it actually is');
+});
+
+t.check('a poorly scanned card still passes on the number plus supporting words', () => {
+    // The word "Aadhaar" did not survive the photo, but DOB, MALE and the
+    // government line did — together with the full number, that is a real card.
+    const scan = 'GOVERNMENT OF INDIA  KANCHAN KUMAR  DOB 14/08/1996  MALE  2345 6789 O124';
+    const r = idv.evaluateText(scan, 'Aadhaar Card', '234567890124');
+    assert.equal(r.keywordFound, false, 'no distinctive keyword survived');
+    assert(r.support >= 2, 'but the supporting words did');
+    assert.equal(r.matched, true);
+});
+t.check('supporting words alone are never enough to forge with', () => {
+    // Everything generic was demoted out of the strong keyword lists precisely so
+    // that typing one line and a number cannot pass.
+    assert.equal(idv.evaluateText('Government of India 234567890124', 'Aadhaar Card', '234567890124').matched, false);
+    assert.equal(idv.evaluateText('Untitled - Notepad  234567890124', 'Aadhaar Card', '234567890124').matched, false);
+});
+t.check('text pooled across render passes is scored together', () => {
+    // One pass reads the heading, another reads the number. Scored separately
+    // neither matches; the passes are pooled, so together they do.
+    const heading = 'AADHAAR  UNIQUE IDENTIFICATION AUTHORITY OF INDIA';
+    const digits = '2345 6789 O124';
+    assert.equal(idv.evaluateText(heading, 'Aadhaar Card', '234567890124').matched, false, 'heading alone');
+    assert.equal(idv.evaluateText(digits, 'Aadhaar Card', '234567890124').matched, false, 'digits alone');
+    assert.equal(idv.evaluateText(`${heading}\n${digits}`, 'Aadhaar Card', '234567890124').matched, true, 'pooled');
+});
+
 restoreLogs();
 process.exit(t.report() > 0 ? 1 : 0);
